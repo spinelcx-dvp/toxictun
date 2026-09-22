@@ -1,0 +1,71 @@
+name: Xray-VLESS-Panel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350 # حدود ۶ ساعت [citation:11]
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Install Xray
+      uses: Xray-setup/setup-xray@v1 # اکشن آماده برای نصب Xray [citation:4]
+
+    - name: Install Cloudflared
+      run: |
+        wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared
+        chmod +x cloudflared
+        sudo mv cloudflared /usr/local/bin/
+
+    - name: Create Xray Config
+      run: |
+        mkdir -p /tmp/xray
+        cat > /tmp/xray/config.json << 'EOF'
+        {
+          "log": {"loglevel": "warning"},
+          "inbounds": [{
+            "port": 8080,
+            "listen": "127.0.0.1",
+            "protocol": "vless",
+            "settings": {
+              "clients": [{"id": "REPLACE_UUID"}],
+              "decryption": "none"
+            },
+            "streamSettings": {
+              "network": "ws",
+              "wsSettings": {"path": "REPLACE_PATH"}
+            }
+          }],
+          "outbounds": [{"protocol": "freedom"}]
+        }
+        EOF
+
+    - name: Start Xray
+      run: |
+        # کانفیگ را از فایل می‌خوانیم (برای ویرایش داینامیک در پنل)
+        xray run -c /tmp/xray/config.json &
+        sleep 2
+
+    - name: Start Panel & Tunnel
+      run: |
+        # پنل را اجرا می‌کنیم (پورت 5000)
+        python3 panel.py &
+        sleep 2
+        
+        # تونل برای پنل
+        cloudflared tunnel --url http://localhost:5000 --no-autoupdate > /tmp/panel_tunnel.log 2>&1 &
+        
+        # تونل برای Xray
+        cloudflared tunnel --url http://localhost:8080 --no-autoupdate > /tmp/xray_tunnel.log 2>&1 &
+        
+        # صبر می‌کنیم تا URLها تولید شوند و لاگ‌ها را پارس می‌کنیم
+        sleep 15
+        echo "Panel URL: $(grep -o 'https://[^ ]*trycloudflare.com' /tmp/panel_tunnel.log | head -1)"
+        echo "Xray URL: $(grep -o 'https://[^ ]*trycloudflare.com' /tmp/xray_tunnel.log | head -1)"
+        
+        # زنده نگه داشتن
+        tail -f /dev/null
