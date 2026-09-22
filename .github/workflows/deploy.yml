@@ -6,20 +6,32 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 350 # حدود ۶ ساعت [citation:11]
+    timeout-minutes: 350
 
     steps:
     - name: Checkout
       uses: actions/checkout@v4
 
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq unzip python3-pip
+        pip3 install flask
+
     - name: Install Xray
-      uses: Xray-setup/setup-xray@v1 # اکشن آماده برای نصب Xray [citation:4]
+      run: |
+        wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+        unzip -q Xray-linux-64.zip
+        chmod +x xray
+        sudo mv xray /usr/local/bin/
+        xray version
 
     - name: Install Cloudflared
       run: |
         wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared
         chmod +x cloudflared
         sudo mv cloudflared /usr/local/bin/
+        cloudflared --version
 
     - name: Create Xray Config
       run: |
@@ -32,40 +44,48 @@ jobs:
             "listen": "127.0.0.1",
             "protocol": "vless",
             "settings": {
-              "clients": [{"id": "REPLACE_UUID"}],
+              "clients": [{"id": "d342d11e-d424-4583-b36e-524ab1f0afa4"}],
               "decryption": "none"
             },
             "streamSettings": {
               "network": "ws",
-              "wsSettings": {"path": "REPLACE_PATH"}
+              "wsSettings": {"path": "/vless"}
             }
           }],
           "outbounds": [{"protocol": "freedom"}]
         }
         EOF
+        cat /tmp/xray/config.json
 
     - name: Start Xray
       run: |
-        # کانفیگ را از فایل می‌خوانیم (برای ویرایش داینامیک در پنل)
-        xray run -c /tmp/xray/config.json &
-        sleep 2
+        nohup xray run -c /tmp/xray/config.json > /tmp/xray.log 2>&1 &
+        sleep 3
+        cat /tmp/xray.log || true
+        ps aux | grep xray | grep -v grep
 
-    - name: Start Panel & Tunnel
+    - name: Start Panel and Tunnels
       run: |
-        # پنل را اجرا می‌کنیم (پورت 5000)
-        python3 panel.py &
-        sleep 2
+        nohup python3 panel.py > /tmp/panel.log 2>&1 &
+        sleep 3
         
-        # تونل برای پنل
-        cloudflared tunnel --url http://localhost:5000 --no-autoupdate > /tmp/panel_tunnel.log 2>&1 &
+        nohup cloudflared tunnel --url http://localhost:5000 --no-autoupdate > /tmp/panel_tunnel.log 2>&1 &
+        nohup cloudflared tunnel --url http://localhost:8080 --no-autoupdate > /tmp/xray_tunnel.log 2>&1 &
         
-        # تونل برای Xray
-        cloudflared tunnel --url http://localhost:8080 --no-autoupdate > /tmp/xray_tunnel.log 2>&1 &
+        echo "Waiting for tunnels to be ready..."
+        sleep 25
         
-        # صبر می‌کنیم تا URLها تولید شوند و لاگ‌ها را پارس می‌کنیم
-        sleep 15
-        echo "Panel URL: $(grep -o 'https://[^ ]*trycloudflare.com' /tmp/panel_tunnel.log | head -1)"
-        echo "Xray URL: $(grep -o 'https://[^ ]*trycloudflare.com' /tmp/xray_tunnel.log | head -1)"
+        echo "=========== PANEL TUNNEL URL ==========="
+        grep -o 'https://[^ ]*trycloudflare.com' /tmp/panel_tunnel.log | head -1 || echo "Panel tunnel not ready"
+        echo "========================================"
+        echo ""
+        echo "=========== XRAY TUNNEL URL ==========="
+        grep -o 'https://[^ ]*trycloudflare.com' /tmp/xray_tunnel.log | head -1 || echo "Xray tunnel not ready"
+        echo "========================================"
         
-        # زنده نگه داشتن
+        echo ""
+        echo ">>> Open the PANEL URL in your browser to see the config <<<"
+        echo ""
+        
+        # Keep the job alive for the maximum duration
         tail -f /dev/null
